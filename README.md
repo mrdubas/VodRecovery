@@ -6,8 +6,8 @@ This Fork of VodRecovery is used to recover and download Twitch VODs, highlights
 
 1. Install [Python](https://www.python.org/downloads/), during installation check the box labeled "Add Python to environment variables"
 2. Download the app by clicking [here](https://github.com/MacielG1/VodRecovery/archive/refs/heads/main.zip) or with the command `git clone https://github.com/MacielG1/VodRecovery`
-3. Extract the zip file and run: `install_dependencies.py`
-4. Start the program by running the file `vod_recovery.py` or one of the shortcuts
+3. Extract the zip file and run the file: `install_dependencies.py`
+4. Start the program by running `vod_recovery.py` or one of the shortcuts
 
 ## Core Features
 
@@ -38,5 +38,5 @@ https://github.com/MacielG1/VodRecovery/releases/latest
 
 ## Notes
 
-- Original Repo: [VodRecovery](https://github.com/Shishkebaboo/VodRecovery) by Shishkebaboo
-- How Twitch Handles [VOD Storage](https://help.twitch.tv/s/article/video-on-demand#enabling)
+- Original Repo: [VodRecovery](https://github.com/ArdianaLeek/VodRecovery) by Shishkebaboo
+- How Twitch Handles [VOD Storage](https://help.twitch.tv/s/article/video-on-demand)

@@ -25,7 +25,7 @@ from tqdm import tqdm
 from ffmpeg_progress_yield import FfmpegProgress
 
 
-CURRENT_VERSION = "1.3.9"
+CURRENT_VERSION = "1.3.10"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", '1440p60', '1440p30', "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30"]
 
@@ -45,7 +45,6 @@ def read_config_by_key(config_file, key):
 
 def get_default_video_format():
     default_video_format = read_config_by_key("settings", "DEFAULT_VIDEO_FORMAT")
-
     if default_video_format in SUPPORTED_FORMATS:
         return default_video_format
     return ".mp4"
@@ -1574,6 +1573,42 @@ def vod_recover(streamer_name, video_id, timestamp, tracker_url=None):
     return vod_url
 
 
+def print_bulk_vod_options_menu(all_m3u8_links):
+    while True:
+        print("\nFound M3U8 Links:")
+        for idx, (video_id, link) in enumerate(all_m3u8_links, 1):
+            print(f"{idx}. Video {video_id}: \033[92m{link}\033[0m")
+        
+        print("\nOptions:")
+        print("1. Download all VODs")
+        print("2. Download specific VOD")
+        print("3. Download or trim specific VOD")
+        print("4. Return to main menu")
+        
+        choice = input("\nSelect Option: ")
+        
+        if choice in ["1", "2", "3", "4"]:
+            return choice
+        else:
+            print("Invalid choice. Please try again.")
+
+
+def print_select_vod_menu(all_m3u8_links):
+    while True:
+        print("\nSelect a VOD to download:")
+        for idx, (video_id, link) in enumerate(all_m3u8_links, 1):
+            print(f"{idx}. VOD {idx}: \033[92m{link}\033[0m")
+        
+        try:
+            vod_num = int(input("\nEnter the number of the VOD to download: "))
+            if 1 <= vod_num <= len(all_m3u8_links):
+                return all_m3u8_links[vod_num - 1]
+            else:
+                print("Invalid VOD number. Please try again.")
+        except ValueError:
+            print("Please enter a valid number.")
+
+
 def bulk_vod_recovery():
     csv_file_path = get_and_validate_csv_filename()
     streamer_name = parse_streamer_from_csv_filename(csv_file_path)
@@ -1581,20 +1616,40 @@ def bulk_vod_recovery():
     print()
     all_m3u8_links = []
     for timestamp, video_id in csv_file.items():
-        print("Recovering Video: ", video_id)
+        print("Recovering Video:", video_id)
         m3u8_link = asyncio.run(get_vod_urls(streamer_name.lower(), video_id, timestamp))
 
         if m3u8_link is not None:
             process_m3u8_configuration(m3u8_link)
-            all_m3u8_links.append(m3u8_link)
+            all_m3u8_links.append((video_id, m3u8_link))
         else:
             print("No VODs found using the current domain list.")
+    
     if all_m3u8_links:
-        print("All M3U8 Links found:")
-        for link in all_m3u8_links:
-            print(f"\033[92m{link}\033[0m")
-
-    input("\nPress Enter to continue...")
+        while True:
+            choice = print_bulk_vod_options_menu(all_m3u8_links)
+            
+            if choice == "1":
+                for video_id, link in all_m3u8_links:
+                    print(f"\nDownloading VOD {video_id}...")
+                    handle_vod_url_normal(link)
+                break
+            elif choice == "2":
+                selected_vod = print_select_vod_menu(all_m3u8_links)
+                if selected_vod:
+                    video_id, link = selected_vod
+                    print(f"\nDownloading VOD {video_id}...")
+                    handle_vod_url_normal(link)
+                break
+            elif choice == "3":
+                selected_vod = print_select_vod_menu(all_m3u8_links)
+                if selected_vod:
+                    video_id, link = selected_vod
+                    handle_download_menu(link)
+                break
+            else:
+                print("Invalid choice. Please try again.")
+        input("\nPress Enter to continue...")
 
 
 def clip_recover(streamer, video_id, duration):
@@ -1837,10 +1892,10 @@ def download_clips(directory, streamer_name, video_id):
 
 def get_ffmpeg_path():
     try:
-        if os.path.exists(ffdl.ffmpeg_path):
-            return ffdl.ffmpeg_path
         if (subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
             return "ffmpeg"
+        elif os.path.exists(ffdl.ffmpeg_path):
+            return ffdl.ffmpeg_path
         raise Exception
     except Exception:
         sys.exit("FFmpeg not found! Please install FFmpeg correctly and try again.")
@@ -1849,10 +1904,10 @@ def get_ffmpeg_path():
 
 def get_ffprobe_path():
     try:
-        if os.path.exists(ffdl.ffprobe_path):
-            return ffdl.ffprobe_path
-        elif (subprocess.run(["ffprobe", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
+        if (subprocess.run(["ffprobe", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
             return "ffprobe"
+        elif os.path.exists(ffdl.ffprobe_path):
+            return ffdl.ffprobe_path
     except Exception:
         sys.exit("FFprobe not found! Please install FFmpeg correctly and try again.")
 
