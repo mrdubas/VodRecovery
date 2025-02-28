@@ -1447,6 +1447,17 @@ def return_m3u8_duration(m3u8_link):
     return total_minutes
 
 
+def check_if_unmuted_is_playable(m3u8_source):
+    ffprobe_command = f"ffprobe -protocol_whitelist file,http,https,tcp,tls,crypto -i {m3u8_source}"
+    result = subprocess.run(ffprobe_command, shell=True, check=False, capture_output=True, text=True)
+    output = result.stderr
+    if "Error" in output:
+        # print("Video is not playable after unmuting, using original m3u8 instead\n")
+        return False
+    else:
+        return True
+    
+
 def process_m3u8_configuration(m3u8_link, skip_check=False):
     playlist_segments = get_all_playlist_segments(m3u8_link)
 
@@ -1458,6 +1469,12 @@ def process_m3u8_configuration(m3u8_link, skip_check=False):
         if read_config_by_key("settings", "UNMUTE_VIDEO"):
             unmute_vod(m3u8_link)
             m3u8_source = get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link),parse_video_id_from_m3u8_link(m3u8_link),)
+            is_playable = check_if_unmuted_is_playable(m3u8_source)
+            if is_playable:
+                return m3u8_source
+            else:
+                return m3u8_link
+        
     else:
         m3u8_source = m3u8_link
         os.remove(get_vod_filepath(parse_streamer_from_m3u8_link(m3u8_link), parse_video_id_from_m3u8_link(m3u8_link)))
