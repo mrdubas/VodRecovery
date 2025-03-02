@@ -25,7 +25,7 @@ from tqdm import tqdm
 from ffmpeg_progress_yield import FfmpegProgress
 
 
-CURRENT_VERSION = "1.3.10"
+CURRENT_VERSION = "1.3.11"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", '1440p60', '1440p30', "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30"]
 
@@ -932,9 +932,9 @@ def manual_vod_recover():
         streamer_name = input("Enter the Streamer Name: ")
         if streamer_name.lower().strip():
             break
-
-        print("\n✖  No streamer name! Please try again:\n")
-
+        else:
+            print("\n✖  No streamer name! Please try again:\n")
+        
     while True:
         video_id = input("Enter the Video ID (from: Twitchtracker/Streamscharts/Sullygnome): ")
         if video_id.strip():
@@ -944,6 +944,8 @@ def manual_vod_recover():
 
     timestamp = get_time_input_YYYY_MM_DD_HH_MM_SS("Enter VOD Datetime YYYY-MM-DD HH:MM:SS (24-hour format, UTC): ")
 
+    streamer_name = streamer_name.lower().strip()
+    print(f"\nRecovering VOD for {streamer_name} with ID {video_id} at {timestamp}")
     m3u8_link = vod_recover(streamer_name, video_id, timestamp)
     if m3u8_link is None:
         sys.exit("No M3U8 link found! Exiting...")
@@ -1569,10 +1571,13 @@ def vod_recover(streamer_name, video_id, timestamp, tracker_url=None):
                 vod_url = return_supported_qualities(asyncio.run(get_vod_urls(streamer_name, video_id, parsed_timestamp)))
                 if vod_url:
                     return vod_url
-        
+
         if not any(all_timestamps):
-            print("\033[91m \n✖  Unable to get the datetime! Try entering it manually \033[0m")
-            input_datetime = input("Enter the datetime (YYYY-MM-DD HH:MM:SS): ")
+            print("\033[91m \n✖ Unable to get the stream start datetime!\033[0m")
+            print(f'\nOpen the Twitch Tracker page source \033[94mview-source:{tracker_url}\033[0m and search for <meta name=\"description\"')
+            print("The datetime will be in the content, like for example: 2025-01-01 12:00:00")
+
+            input_datetime = input("\nEnter the datetime: ")
 
             if not input_datetime:
                 print("\033[91m \n✖  No datetime entered! \033[0m")
