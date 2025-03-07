@@ -25,9 +25,10 @@ from tqdm import tqdm
 from ffmpeg_progress_yield import FfmpegProgress
 
 
-CURRENT_VERSION = "1.3.11"
+CURRENT_VERSION = "1.3.12"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", '1440p60', '1440p30', "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30"]
+
 
 if sys.platform == 'win32':
 	asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -109,9 +110,10 @@ def print_main_menu():
         "1) VOD Recovery",
         "2) Clip Recovery",
         f"3) Download VOD ({default_video_format.lstrip('.')})",
-        "4) Unmute & Check M3U8 Availability",
-        "5) Options",
-        "6) Exit",
+        "4) Search Recent Streams",
+        "5) Unmute & Check M3U8 Availability",
+        "6) Options",
+        "7) Exit",
     ]
     while True:
         print("\n".join(menu_options))
@@ -128,7 +130,7 @@ def print_video_mode_menu():
     vod_type_options = [
         "1) Website Video Recovery",
         "2) Manual Recovery",
-        "3) Bulk Video Recovery from SullyGnome CSV Export",
+        "3) Bulk Recovery from SullyGnome CSV Export",
         "4) Return",
     ]
     while True:
@@ -355,6 +357,209 @@ def get_latest_version(retries=3):
                 continue 
             else:
                 return None
+
+
+def get_latest_streams_from_twitchtracker():
+    streamer_name = input("\nEnter streamer name: ").strip().lower()
+    url = f"https://twitchtracker.com/{streamer_name}/streams"
+    
+    current_page = 1
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print("\nOpening TwitchTracker with browser...")
+            source = handle_selenium(url)
+            if not source:
+                if attempt < max_retries - 1:
+                    print("Retrying...")
+                    continue
+                else:
+                    print("\n✖  Unable to open TwitchTracker!")
+                    return
+                
+            bs = BeautifulSoup(source, "html.parser")
+                
+            streams_table = bs.find("table", {"id": "streams"})
+            if not streams_table:
+                if attempt < max_retries - 1:
+                    print("Retrying...")
+                    continue
+                else:
+                    print("Unable to get streams from TwitchTracker!")
+                    return
+                    
+            all_rows = streams_table.find("tbody").find_all("tr")
+            if not all_rows:
+                if attempt < max_retries - 1:
+                    print("Retrying...")
+                    continue
+                else:
+                    print("Unable to get streams from TwitchTracker!")
+                    return
+            
+            total_rows = all_rows
+            total_pages = (len(total_rows) + 10 - 1)
+            
+            # Check first row's date format
+            first_row = all_rows[0]
+            first_date = first_row.find_all("td")[0].find("span").text
+
+            if re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$', first_date.strip()):
+                print("\nInvalid date format detected, refreshing page...")
+                if attempt < max_retries - 1:
+                    print("Retrying...")
+                    continue
+                else:
+                    print("\n✖  Could not load correct date format after multiple attempts!")
+                    return
+                
+            try:
+                timezone_element = bs.find("div", {"class": "navbar-static", "id": "timezone-switch"}).find("span")
+                timezone_text = timezone_element.text if timezone_element else "UTC"
+                # Extract timezone offset from text like "UTC+2" or "UTC-5"
+                timezone_match = re.match(r'UTC([+-]\d+)', timezone_text)
+                timezone_offset = int(timezone_match.group(1)) if timezone_match else 0
+            except Exception as e:
+                print(f"\nWarning: Could not determine timezone, defaulting to UTC: {str(e)}")
+                timezone_offset = 0
+            
+            def display_streams(page_num, timezone_offset):
+                start_idx = (page_num - 1) * 10
+                end_idx = min(start_idx + 10, len(total_rows))
+                rows_to_display = total_rows[start_idx:end_idx]
+                
+                print(f"\nLatest streams for {streamer_name}:")
+                print("\n#   Date                Duration    Title")
+                print("-" * 80)
+                
+                stream_info = []
+                valid_streams = []
+                
+                for idx, row in enumerate(rows_to_display, start_idx + 1):
+                    try:
+                        cells = row.find_all("td")
+                            
+                        date = cells[0].find("span").text.strip()
+                        duration = cells[1].find("span").text.strip().ljust(10)
+                        
+                        title = cells[6].text.strip()
+                        
+                        # Get video ID from the link
+                        link = cells[0].find("a")
+                        if not link or not link.has_attr("href"):
+                            print(f"\n✖  Could not find video ID for stream {idx}")
+                            continue
+                        video_id = link["href"].split("/")[-1]
+                        
+                        # Convert to UTC for recovery process but keep local for display
+                        try:
+                            local_dt = datetime.strptime(date, "%d/%b/%Y %H:%M")
+                            utc_dt = local_dt - timedelta(hours=timezone_offset)
+                            date_utc = utc_dt.strftime("%d/%b/%Y %H:%M")
+                        except Exception:
+                            date_utc = date
+                        
+                        stream_info.append((video_id, date, date_utc, title)) 
+                        valid_streams.append(idx)
+                        
+                        idx_str = str(idx).ljust(3)
+                        date_str = date.ljust(20)
+                        duration_str = duration.ljust(10)
+                        
+                        # Trim title if too long and add ellipsis
+                        if len(title) > 75:
+                            title = title[:72] + "..."
+                        
+                        print(f"{idx_str} {date_str} {duration_str} {title}")
+                    except Exception as e:
+                        print(f"\n✖  Error processing stream {idx}: {str(e)}")
+                        continue
+                
+                return stream_info, valid_streams
+            
+            stream_info, valid_streams = display_streams(current_page, timezone_offset)
+                    
+            if not stream_info:
+                print("\n✖  No valid streams found!")
+                if attempt < max_retries - 1:
+                    print("Retrying...")
+                    continue
+                else:
+                    print("Max retries reached!")
+                    return
+                    
+            break
+                    
+        except Exception as e:
+            print(f"\n✖  Error occurred: {str(e)}")
+            if attempt < max_retries - 1:
+                print("Retrying...")
+                continue
+            else:
+                print("Max retries reached!")
+                return
+                
+    while True:
+        print("\nOptions:")
+        print("1. Recover specific stream")
+        print("2. Recover all streams")
+        if current_page == 1:
+            print("3. Show next 10 streams")
+            print("4. Return")
+        else:
+            print("3. Return")
+        
+        choice = input("\nSelect Option: ")
+        if choice == "1":
+            try:
+                stream_num = int(input("\nEnter the number of the stream: "))
+                try:
+                    list_index = valid_streams.index(stream_num)
+                    video_id, date_str, date_utc, title = stream_info[list_index]
+                    print(f"\nRecovering VOD: {date_str} - {title}")  # Show local time
+                    timestamp = datetime.strptime(date_utc, "%d/%b/%Y %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
+                    
+                    m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
+                    if m3u8_source:
+                        handle_download_menu(m3u8_source)
+                    else:
+                        print(f"\n✖  Could not recover VOD {video_id}!")
+                except ValueError:
+                    print("Invalid stream number. Please try again.")
+                    continue
+            except ValueError:
+                print("Please enter a valid number.")
+                continue
+            break
+        elif choice == "2":
+            print("\nRecovering all streams...")
+            for video_id, date_str, date_utc, title in stream_info:
+                print(f"\nRecovering Video: {date_str} - {title}")  # Show local time
+                timestamp = datetime.strptime(date_utc, "%d/%b/%Y %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
+                
+                m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
+                if m3u8_source:
+                    print(f"\nRecovering VOD {video_id}...")
+                    handle_vod_url_normal(m3u8_source)
+                else:
+                    print(f"\n✖  Could not recover VOD {video_id}!")
+            break
+        elif choice == "3":
+            if current_page == 1:
+                # Show next 10 streams
+                if current_page < total_pages:
+                    current_page += 1
+                    stream_info, valid_streams = display_streams(current_page, timezone_offset)
+                else:
+                    print("\nYou've reached the last page of streams.")
+            else:
+                # Return option
+                break
+        elif choice == "4" and current_page == 1:
+            break
+        else:
+            print("\nInvalid option. Please try again.")
 
 
 def check_for_updates():
@@ -1015,6 +1220,7 @@ async def fetch_status(session, url, retries=3, timeout=30):
 
 
 async def get_vod_urls(streamer_name, video_id, start_timestamp):
+
     m3u8_link_list = []
     script_dir = get_script_directory()
     domains = read_text_file(os.path.join(script_dir, "lib", "domains.txt"))
@@ -1135,18 +1341,27 @@ def handle_selenium(url):
             try:
                 sb.activate_cdp_mode(url)
                 sb.sleep(3)
-                sb.uc_gui_handle_captcha()
-                sb.sleep(1)
-                # sb.reconnect()
+                sb.uc_gui_click_captcha()
+                sb.sleep(3)
                 source = sb.cdp.get_page_source()
+                if f"Waiting for {url.split('/')[2]} to respond..." in source:
+                    raise Exception("Error: Waiting for website to respond...")
                 return source
-            except Exception as e:
-                print(e)
+                
+            except Exception:
+                try:
+                    sb.activate_cdp_mode(url)
+                    sb.sleep(3)
+                    sb.uc_gui_handle_captcha()
+                    sb.sleep(3)
+                    source = sb.cdp.get_page_source()
+                    return source
+                except Exception as e:
+                    print(e)
             finally:
-                # delete folder generated by selenium browser
                 try:
                     if os.path.exists("downloaded_files"):
-                        rmtree("downloaded_files")
+                        rmtree("downloaded_files") # delete folder generated by selenium browser
                 except Exception:
                     pass
     except Exception as e:
@@ -1278,7 +1493,6 @@ def parse_datetime_streamscharts(streamscharts_url):
         # Method 2: Using Selenium
         print("Opening Streamscharts with browser...")
 
-        # with SB(uc=True) as sb:
         source = handle_selenium(streamscharts_url)
 
         bs = BeautifulSoup(source, "html.parser")
@@ -1914,24 +2128,35 @@ def download_clips(directory, streamer_name, video_id):
 
 def get_ffmpeg_path():
     try:
-        if (subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
-            return "ffmpeg"
-        elif os.path.exists(ffdl.ffmpeg_path):
+        try:
+
+            if subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0:
+                return "ffmpeg"
+        except Exception:
+            pass 
+        
+        if os.path.exists(ffdl.ffmpeg_path):
             return ffdl.ffmpeg_path
+
         raise Exception
     except Exception:
         sys.exit("FFmpeg not found! Please install FFmpeg correctly and try again.")
 
 
-
 def get_ffprobe_path():
     try:
-        if (subprocess.run(["ffprobe", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0):
-            return "ffprobe"
-        elif os.path.exists(ffdl.ffprobe_path):
+        try:
+            if subprocess.run(["ffprobe", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0:
+                return "ffprobe"
+        except Exception:
+            pass
+
+        if os.path.exists(ffdl.ffprobe_path):
             return ffdl.ffprobe_path
+
+        raise Exception
     except Exception:
-        sys.exit("FFprobe not found! Please install FFmpeg correctly and try again.")
+        sys.exit("FFprobe not found! Please install FFmpeg with FFprobe correctly and try again.")
 
 
 def get_yt_dlp_path():
@@ -2028,6 +2253,7 @@ def download_m3u8_video_url(m3u8_link, output_filename):
             "-f", get_ffmpeg_format(get_default_video_format()),
             "-y", output_path
         ]
+
     else:
         command = [
             "yt-dlp",
@@ -2104,6 +2330,7 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
 
     downloader = get_default_downloader()
 
+    
     if downloader == "ffmpeg":
         command = [
             get_ffmpeg_path(),
@@ -2115,7 +2342,6 @@ def download_m3u8_video_file(m3u8_file_path, output_filename):
             "-f", get_ffmpeg_format(get_default_video_format()),
             "-y", output_path,
         ]
-
     elif downloader == "yt-dlp":
         if os.name == 'nt':  # For Windows
             m3u8_file_path = f"file:\\\\{m3u8_file_path}"
@@ -2501,7 +2727,7 @@ def handle_file_download_menu(m3u8_file_path):
 
 def print_confirm_download_menu():
     vlc_location = get_VLC_Location()
-    menu_options = ["1) Start Downloading", "2) Specify Start & End times"]
+    menu_options = ["1) Start Downloading", "2) Trim and Download"]
     if vlc_location:
         menu_options.append("3) Play with VLC")
     menu_options.append(f"{3 if not vlc_location else 4}) Return")
@@ -2756,6 +2982,8 @@ def run_vod_recover():
             elif download_type == 4:
                 continue
         elif menu == 4:
+            get_latest_streams_from_twitchtracker()
+        elif menu == 5:
             mode = print_handle_m3u8_availability_menu()
             if mode == 1:
                 url = print_get_m3u8_link_menu()
@@ -2778,7 +3006,7 @@ def run_vod_recover():
 
             elif menu == 3:
                 continue
-        elif menu == 5:
+        elif menu == 6:
             while True:
                 print()
                 options_choice = print_options_menu()
@@ -2804,7 +3032,7 @@ def run_vod_recover():
                     input("Press Enter to continue...")
                 elif options_choice == 7:
                     break
-        elif menu == 6:
+        elif menu == 7:
             print("\nExiting...\n")
             sys.exit()
         else:

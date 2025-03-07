@@ -6,12 +6,16 @@ import ffmpeg_downloader as ffdl
 
 def get_ffmpeg_location():
     try:
+        try:
+            if subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0:
+                return "ffmpeg"
+        except Exception:
+            pass
         if path.exists(ffdl.ffmpeg_path):
             return ffdl.ffmpeg_path
-        if subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True).returncode == 0:
-            return "ffmpeg"
     except Exception:
         return None
+
 
 def download_ffmpeg():
     try:
