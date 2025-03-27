@@ -23,9 +23,12 @@ from packaging import version
 import ffmpeg_downloader as ffdl
 from tqdm import tqdm
 from ffmpeg_progress_yield import FfmpegProgress
+import logging
 
+logging.getLogger('asyncio').setLevel(logging.CRITICAL)
+logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.3.12"
+CURRENT_VERSION = "1.3.13"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", '1440p60', '1440p30', "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30"]
 
@@ -975,8 +978,12 @@ def get_m3u8_file_dialog():
 
 def parse_vod_filename(m3u8_video_filename):
     base = os.path.basename(m3u8_video_filename)
-    streamer_name, video_id = base.split(".m3u8", 1)[0].rsplit("_", 1)
-    return streamer_name, video_id
+    try:
+        streamer_name, video_id = base.split(".m3u8", 1)[0].rsplit("_", 1)
+        return streamer_name, video_id
+    except ValueError:
+        print(f"Error: {base}")
+        return "Video", "Output"
 
 
 def parse_vod_filename_with_Brackets(m3u8_video_filename):
@@ -1337,7 +1344,7 @@ def parse_website_duration(duration_string):
 
 def handle_selenium(url):
     try:
-        with SB(uc=True) as sb:
+        with SB(uc=True, ad_block=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
                 sb.sleep(3)
@@ -1474,13 +1481,10 @@ def parse_streamscharts_datetime_data(bs):
     except Exception:
         streamcharts_duration_in_minutes = None
 
-    print(f"Datetime: {stream_datetime}")
     return stream_datetime, streamcharts_duration_in_minutes
 
 
 def parse_datetime_streamscharts(streamscharts_url):
-    print("\nRetrieving datetime from Streamscharts...")
-
     try:
         # Method 1: Using requests
         response = requests.get(
@@ -1511,13 +1515,10 @@ def parse_twitchtracker_datetime_data(bs):
     except Exception:
         twitchtracker_duration_in_minutes = None
 
-    print(f"Datetime: {twitchtracker_datetime}")
     return twitchtracker_datetime, twitchtracker_duration_in_minutes
 
 
 def parse_datetime_twitchtracker(twitchtracker_url):
-    print("\nRetrieving datetime from Twitchtracker...")
-
     try:
         # Method 1: Using requests
         response = requests.get(twitchtracker_url, headers=return_user_agent(), timeout=10)
@@ -1538,7 +1539,6 @@ def parse_datetime_twitchtracker(twitchtracker_url):
             match = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", description_content)
             if match:
                 twitchtracker_datetime = match.group(0)
-                print(f"Datetime: {twitchtracker_datetime}")
 
                 try:
                     twitchtracker_duration = bs.find_all("div", {"class": "g-x-s-value"})[0].text
@@ -1561,13 +1561,10 @@ def parse_sullygnome_datetime_data(bs):
     sullygnome_duration = bs.find_all("div", {"class": "MiddleSubHeaderItemValue"})[7].text.split(",")
     sullygnome_duration_in_minutes = parse_website_duration(sullygnome_duration)
 
-    print(f"Datetime: {sullygnome_datetime}")
     return sullygnome_datetime, sullygnome_duration_in_minutes
 
 
 def parse_datetime_sullygnome(sullygnome_url):
-    print("\nRetrieving datetime from Sullygnome...")
-
     try:
         # Method 1: Using requests
         response = requests.get(sullygnome_url, headers=return_user_agent(), timeout=10)
@@ -1734,14 +1731,29 @@ async def validate_playlist_segments(segments):
     all_segments = [url.strip() for url in segments]
     available_segment_count = 0
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_status(session, url) for url in all_segments]
-        for index, task in enumerate(asyncio.as_completed(tasks)):
-            url = await task
-            if url:
-                available_segment_count += 1
-                valid_segments.append(url)
-            print(f"\rChecking segments {index + 1} / {len(all_segments)}", end="")
+    connector = aiohttp.TCPConnector(force_close=True, limit=50)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = []
+        try:
+            for url in all_segments:
+                task = asyncio.create_task(fetch_status(session, url))
+                tasks.append(task)
+            
+            for index, task in enumerate(asyncio.as_completed(tasks)):
+                try:
+                    url = await task
+                    if url:
+                        available_segment_count += 1
+                        valid_segments.append(url)
+                    print(f"\rChecking segments {index + 1} / {len(all_segments)}", end="")
+                except (asyncio.CancelledError, Exception):
+                    continue
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            
+            await connector.close()
 
     print()
     if available_segment_count == len(all_segments) or available_segment_count == 0:
@@ -1753,60 +1765,83 @@ async def validate_playlist_segments(segments):
 
 
 def vod_recover(streamer_name, video_id, timestamp, tracker_url=None):
-    vod_age = calculate_days_since_broadcast(timestamp)
+    print(f"\nDatetime: {timestamp}")
+    try:
+        vod_age = calculate_days_since_broadcast(timestamp)
 
-    if vod_age > 60:
-        print("Video is older than 60 days. Chances of recovery are very slim.")
-    vod_url = None
-    if timestamp:
-        vod_url = return_supported_qualities(asyncio.run(get_vod_urls(streamer_name, video_id, timestamp)))
+        if vod_age > 60:
+            print("Video is older than 60 days. Chances of recovery are very slim.")
+        vod_url = None
+        if timestamp:
 
-    if vod_url is None:
-        alternate_websites = generate_website_links(streamer_name, video_id, tracker_url)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, timestamp))
+            loop.close()
 
-        print("\nUnable to recover with provided url! Trying alternate sources...")
-        all_timestamps = [timestamp]
+        if vod_url is None:
+            alternate_websites = generate_website_links(streamer_name, video_id, tracker_url)
 
-        # Check if any alternate websites have a different timestamp
-        for website in alternate_websites:
-            parsed_timestamp = None
-            if "streamscharts" in website:                                                                                                              
-                parsed_timestamp, _ = parse_datetime_streamscharts(website)
-            elif "twitchtracker" in website:
-                parsed_timestamp, _ = parse_datetime_twitchtracker(website)
-            elif "sullygnome" in website:
-                # If the timestamp shows a year different from the current one, skip it since SullyGnome doesn't provide the year
-                if timestamp and datetime.now().year != int(timestamp.split("-")[0]):
-                    continue
-                parsed_timestamp, _ = parse_datetime_sullygnome(website)
+            print("\nUnable to recover with provided url! Searching for different timestamps")
+            all_timestamps = [timestamp]
 
-            if (parsed_timestamp and parsed_timestamp != timestamp and parsed_timestamp not in all_timestamps):
-                all_timestamps.append(parsed_timestamp)
-                vod_url = return_supported_qualities(asyncio.run(get_vod_urls(streamer_name, video_id, parsed_timestamp)))
+            # Check if any alternate websites have a different timestamp
+            for website in alternate_websites:
+                parsed_timestamp = None
+                if "streamscharts" in website:                                                                                                              
+                    parsed_timestamp, _ = parse_datetime_streamscharts(website)
+                elif "twitchtracker" in website:
+                    parsed_timestamp, _ = parse_datetime_twitchtracker(website)
+                elif "sullygnome" in website:
+                    # If the timestamp shows a year different from the current one, skip it since SullyGnome doesn't provide the year
+                    if timestamp and datetime.now().year != int(timestamp.split("-")[0]):
+                        continue
+                    parsed_timestamp, _ = parse_datetime_sullygnome(website)
+
+                if (parsed_timestamp and parsed_timestamp != timestamp and parsed_timestamp not in all_timestamps):
+                    print(f"Found different timestamp: {parsed_timestamp}")
+                    all_timestamps.append(parsed_timestamp)
+
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, parsed_timestamp))
+                    loop.close()
+                    
+                    if vod_url:
+                        return vod_url
+                else:
+                    print("Found same timestamp, skipping...")
+
+            if not any(all_timestamps):
+                print("\033[91m \n✖ Unable to get the stream start datetime!\033[0m")
+                print(f'\nOpen the Twitch Tracker page source \033[94mview-source:{tracker_url}\033[0m and search for <meta name=\"description\"')
+                print("The datetime will be in the content, like for example: 2025-01-01 12:00:00")
+
+                input_datetime = input("\nEnter the datetime: ")
+
+                if not input_datetime:
+                    print("\033[91m \n✖  No datetime entered! \033[0m")
+                    input("\nPress Enter to continue...")
+                    run_vod_recover()
+                
+                # Get the VOD URLs using asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, input_datetime))
+                loop.close()
+                
                 if vod_url:
                     return vod_url
 
-        if not any(all_timestamps):
-            print("\033[91m \n✖ Unable to get the stream start datetime!\033[0m")
-            print(f'\nOpen the Twitch Tracker page source \033[94mview-source:{tracker_url}\033[0m and search for <meta name=\"description\"')
-            print("The datetime will be in the content, like for example: 2025-01-01 12:00:00")
-
-            input_datetime = input("\nEnter the datetime: ")
-
-            if not input_datetime:
-                print("\033[91m \n✖  No datetime entered! \033[0m")
+            if not vod_url:
+                print("\033[91m \n✖  Unable to recover the video! \033[0m")
                 input("\nPress Enter to continue...")
                 run_vod_recover()
 
-            vod_url = return_supported_qualities(asyncio.run(get_vod_urls(streamer_name, video_id, input_datetime)))
-            if vod_url:
-                return vod_url
-        if not vod_url:
-            print("\033[91m \n✖  Unable to recover the video! \033[0m")
-            input("\nPress Enter to continue...")
-            run_vod_recover()
-
-    return vod_url
+        return vod_url
+    except Exception as e:
+        print(f"\n✖  Error during VOD recovery: {str(e)}")
+        return None
 
 
 def print_bulk_vod_options_menu(all_m3u8_links):
@@ -2060,42 +2095,75 @@ async def bulk_clip_recovery():
     clip_format = print_clip_format_menu().split(" ")
     stream_info_dict = parse_clip_csv_file(csv_file_path)
 
-    async with aiohttp.ClientSession() as session:
-        for video_id, values in stream_info_dict.items():
-            vod_counter += 1
-            print(f"\nProcessing Past Broadcast:\n" 
-                  f"Stream Date: {values[0].replace('-', ' ')}\n" 
-                  f"Vod ID: {video_id}\n" 
-                  f"Vod Number: {vod_counter} of {len(stream_info_dict)}\n")
-            original_vod_url_list = get_all_clip_urls(get_clip_format(video_id, values[1]), clip_format)
-            print("Searching...")
+    connector = aiohttp.TCPConnector(limit=200, force_close=True, enable_cleanup_closed=True)
+    timeout = aiohttp.ClientTimeout(total=15, connect=10)
+    
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                for video_id, values in stream_info_dict.items():
+                    vod_counter += 1
+                    print(f"\nProcessing Past Broadcast:\n" 
+                          f"Stream Date: {values[0].replace('-', ' ')}\n" 
+                          f"Vod ID: {video_id}\n" 
+                          f"Vod Number: {vod_counter} of {len(stream_info_dict)}\n")
+                    original_vod_url_list = get_all_clip_urls(get_clip_format(video_id, values[1]), clip_format)
+                    print("Searching...")
 
-            tasks = [validate_clip(session, url, streamer_name, video_id) for url in original_vod_url_list]
-            for task in asyncio.as_completed(tasks):
-                total_counter += 1
-                iteration_counter += 1
-                print(f"\rSearching for clips... {iteration_counter} of {len(original_vod_url_list)}", end=" ", flush=True)
-                result = await task
-                if result:
-                    valid_counter += 1
+                    batch_size = 500
+                    for i in range(0, len(original_vod_url_list), batch_size):
+                        batch = original_vod_url_list[i:i + batch_size]
+                        tasks = []
+                        for url in batch:
+                            try:
+                                tasks.append(validate_clip(session, url, streamer_name, video_id))
+                            except Exception:
+                                continue
+                        
+                        if not tasks:
+                            continue
 
-            print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
+                        try:
+                            results = await asyncio.gather(*tasks, return_exceptions=True)
+                            for result in results:
+                                total_counter += 1
+                                iteration_counter += 1
+                                if iteration_counter % 100 == 0:
+                                    print(f"\rSearching for clips... {iteration_counter} of {len(original_vod_url_list)}", end=" ", flush=True)
+                                if result and not isinstance(result, Exception):
+                                    valid_counter += 1
+                        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                            print(f"\nError in batch (continuing anyway): {str(e)}")
+                            continue
 
-            if valid_counter != 0:
-                user_option = input("Do you want to download all clips recovered (Y/N)? ")
+                    print(f"\n\033[92m{valid_counter} Clip(s) Found\033[0m\n")
 
-                if user_option.upper() == "Y":
-                    download_clips(get_default_directory(), streamer_name, video_id)
-                    os.remove(get_log_filepath(streamer_name, video_id))
-                else:
-                    choice = input("\nWould you like to keep the log file containing links to the recovered clips (Y/N)? ")
-                    if choice.upper() == "N":
-                        os.remove(get_log_filepath(streamer_name, video_id))
+                    if valid_counter != 0:
+                        user_option = input("Do you want to download all clips recovered (Y/N)? ")
+
+                        if user_option.upper() == "Y":
+                            download_clips(get_default_directory(), streamer_name, video_id)
+                            os.remove(get_log_filepath(streamer_name, video_id))
+                        else:
+                            choice = input("\nWould you like to keep the log file containing links to the recovered clips (Y/N)? ")
+                            if choice.upper() == "N":
+                                os.remove(get_log_filepath(streamer_name, video_id))
+                            else:
+                                print("\nRecovered links saved to " + get_log_filepath(streamer_name, video_id))
                     else:
-                        print("\nRecovered links saved to " + get_log_filepath(streamer_name, video_id))
-            else:
-                print("No clips found!... Moving on to next vod." + "\n")
-            total_counter, valid_counter, iteration_counter = 0, 0, 0
+                        print("No clips found!... Moving on to next vod." + "\n")
+                    total_counter, valid_counter, iteration_counter = 0, 0, 0
+                return 
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            retry_count += 1
+            if retry_count >= max_retries:
+                print(f"\nFailed after {max_retries} attempts. Please restart the program.")
+                break
+            print(f"\nError occurred (attempt {retry_count}/{max_retries}): {str(e)}")
+            await asyncio.sleep(1)
 
     input("\nPress Enter to continue...")
 
@@ -2676,7 +2744,6 @@ def handle_file_download_menu(m3u8_file_path):
         if start_download == 1:
 
             streamer_name, video_id = parse_vod_filename(m3u8_file_path)
-
             if stream_date:
                 output_filename = f"{streamer_name} - {stream_date} - [{video_id}]{get_default_video_format()}"
             else:
@@ -3039,19 +3106,14 @@ def run_vod_recover():
             run_vod_recover()
 
 
+
 if __name__ == "__main__":
     try:
         run_vod_recover()
     except KeyboardInterrupt:
         print("\n\nExiting...")
-        
-        for task in asyncio.all_tasks():
-            task.cancel()
-            
-        sys.exit(0)
-    except Exception as e:
-        print("An error occurred:", e)
-        input("Press Enter to exit.")
+        os._exit(0)
+
 
 
 
