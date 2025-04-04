@@ -28,7 +28,7 @@ import logging
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.3.13"
+CURRENT_VERSION = "1.3.14"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", '1440p60', '1440p30', "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30"]
 
@@ -1219,15 +1219,21 @@ async def fetch_status(session, url, retries=3, timeout=30):
         try:
             async with session.get(url, timeout=timeout) as response:
                 if response.status == 200:
-                    return url
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            if attempt < retries - 1:
-                await asyncio.sleep(2)
+                    data = await response.text()
+                    if data and "#EXTM3U" in data:
+                        return url
+                return None
+                
+        except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError) as e:
+            if attempt == retries - 1:
+                return None
+            continue
+        except Exception as e:
+            return None
     return None
 
 
 async def get_vod_urls(streamer_name, video_id, start_timestamp):
-
     m3u8_link_list = []
     script_dir = get_script_directory()
     domains = read_text_file(os.path.join(script_dir, "lib", "domains.txt"))
@@ -1243,22 +1249,34 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
     successful_url = None
     progress_printed = False
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_status(session, url) for url in m3u8_link_list]
-        task_objects = [asyncio.create_task(task) for task in tasks]
+    try:
+        async with aiohttp.ClientSession() as session:
+            tasks = [fetch_status(session, url) for url in m3u8_link_list]
+            task_objects = [asyncio.create_task(task) for task in tasks]
 
-        for index, task in enumerate(asyncio.as_completed(task_objects), 1):
-            url = await task
-            
-            print(f"\rSearching {index}/{len(m3u8_link_list)} URLs", end="", flush=True)
-            progress_printed = True
-            if url:
-                successful_url = url
-                print("\n" if progress_printed else "\n\n")
-                print(f"\033[92m\u2713 Found URL: {successful_url}\033[0m\n")
-                for task_obj in task_objects:
-                    task_obj.cancel()
-                break
+            for index, task in enumerate(asyncio.as_completed(task_objects), 1):
+                try:
+                    url = await task
+                    print(f"\rSearching {index}/{len(m3u8_link_list)} URLs", end="", flush=True)
+                    progress_printed = True
+                    if url:
+                        successful_url = url
+                        print("\n" if progress_printed else "\n\n")
+                        print(f"\033[92m\u2713 Found URL: {successful_url}\033[0m\n")
+                        for task_obj in task_objects:
+                            try:
+                                task_obj.cancel()
+                            except Exception:
+                                pass
+                        break
+                except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError, OSError) as e:
+                    continue
+                except Exception as e:
+                    continue
+
+    except Exception as e:
+        print(f"\n\033[91m✖ Error during URL search: {str(e)}\033[0m")
+        return None
 
     return successful_url
 
@@ -1344,7 +1362,7 @@ def parse_website_duration(duration_string):
 
 def handle_selenium(url):
     try:
-        with SB(uc=True, ad_block=True) as sb:
+        with SB(uc=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
                 sb.sleep(3)
@@ -1358,9 +1376,9 @@ def handle_selenium(url):
             except Exception:
                 try:
                     sb.activate_cdp_mode(url)
-                    sb.sleep(3)
+                    sb.sleep(5)
                     sb.uc_gui_handle_captcha()
-                    sb.sleep(3)
+                    sb.sleep(5)
                     source = sb.cdp.get_page_source()
                     return source
                 except Exception as e:
@@ -1495,7 +1513,7 @@ def parse_datetime_streamscharts(streamscharts_url):
             return parse_streamscharts_datetime_data(bs)
 
         # Method 2: Using Selenium
-        print("Opening Streamscharts with browser...")
+        print("\nOpening Streamscharts with browser...")
 
         source = handle_selenium(streamscharts_url)
 
@@ -1527,7 +1545,7 @@ def parse_datetime_twitchtracker(twitchtracker_url):
             return parse_twitchtracker_datetime_data(bs)
 
         # Method 2: Using Selenium
-        print("Opening Twitchtracker with browser...")
+        print("\nOpening Twitchtracker with browser...")
         source = handle_selenium(twitchtracker_url)
 
         bs = BeautifulSoup(source, "html.parser")
@@ -1573,7 +1591,7 @@ def parse_datetime_sullygnome(sullygnome_url):
             return parse_sullygnome_datetime_data(bs)
 
         # Method 2: Using Selenium
-        print("Opening Sullygnome with browser...")
+        print("\nOpening Sullygnome with browser...")
         source = handle_selenium(sullygnome_url)
 
         bs = BeautifulSoup(source, "html.parser")
@@ -1730,37 +1748,55 @@ async def validate_playlist_segments(segments):
     valid_segments = []
     all_segments = [url.strip() for url in segments]
     available_segment_count = 0
-
-    connector = aiohttp.TCPConnector(force_close=True, limit=50)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = []
-        try:
-            for url in all_segments:
-                task = asyncio.create_task(fetch_status(session, url))
-                tasks.append(task)
-            
-            for index, task in enumerate(asyncio.as_completed(tasks)):
+    batch_size = 100
+    
+    connector = aiohttp.TCPConnector(
+        limit=100,
+        force_close=True,
+        enable_cleanup_closed=True
+    )
+    timeout = aiohttp.ClientTimeout(total=30, connect=10)
+    
+    try:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            for i in range(0, len(all_segments), batch_size):
+                batch = all_segments[i:i + batch_size]
+                tasks = []
+                
+                for url in batch:
+                    task = asyncio.create_task(fetch_status(session, url))
+                    tasks.append(task)
+                
                 try:
-                    url = await task
-                    if url:
-                        available_segment_count += 1
-                        valid_segments.append(url)
-                    print(f"\rChecking segments {index + 1} / {len(all_segments)}", end="")
-                except (asyncio.CancelledError, Exception):
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for url in results:
+                        if url and not isinstance(url, Exception):
+                            available_segment_count += 1
+                            valid_segments.append(url)
+                    
+                    print(f"\rChecking segments {min(i + batch_size, len(all_segments))} / {len(all_segments)}", end="", flush=True)
+                
+                except Exception as e:
+                    print(f"\nError processing batch: {str(e)}")
                     continue
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            
+                
+                await asyncio.sleep(0.1)
+    
+    except Exception as e:
+        print(f"\nError during segment validation: {str(e)}")
+    
+    finally:
+        if not connector.closed:
             await connector.close()
-
+    
     print()
-    if available_segment_count == len(all_segments) or available_segment_count == 0:
+    if available_segment_count == len(all_segments):
         print("All Segments are Available\n")
-    elif available_segment_count < len(all_segments):
+    elif available_segment_count == 0:
+        print("No Segments are Available\n")
+    else:
         print(f"{available_segment_count} out of {len(all_segments)} Segments are Available. To recheck the segments select option 4 from the menu.\n")
-
+    
     return valid_segments
 
 
