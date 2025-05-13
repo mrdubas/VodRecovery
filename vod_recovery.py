@@ -7,14 +7,14 @@ import re
 import subprocess
 import tkinter as tk
 import sys
-from time import sleep
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from time import sleep, time
 from shutil import rmtree, copyfileobj
 from datetime import datetime, timedelta
 from tkinter import filedialog
 from urllib.parse import urlparse
 from unicodedata import normalize
 import asyncio
-import grequests
 import aiohttp
 from bs4 import BeautifulSoup
 from seleniumbase import SB
@@ -28,10 +28,9 @@ import logging
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.3.14"
+CURRENT_VERSION = "1.3.15"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
-RESOLUTIONS = ["chunked", '1440p60', '1440p30', "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30"]
-
+RESOLUTIONS = ["chunked", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
 if sys.platform == 'win32':
 	asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -1290,17 +1289,22 @@ def return_supported_qualities(m3u8_link):
     if always_best_quality is True and "chunked" in m3u8_link:
         return m3u8_link
 
-    print("\nChecking for available qualities...")
-    request_list = [
-        grequests.get(m3u8_link.replace("chunked", resolution))
-        for resolution in RESOLUTIONS
-    ]
-    responses = grequests.map(request_list)
-    valid_resolutions = [
-        resolution
-        for resolution, response in zip(RESOLUTIONS, responses)
-        if response and response.status_code == 200
-    ]
+    print("Checking for available qualities...")
+
+    def check_quality(resolution):
+        url = m3u8_link.replace("chunked", resolution)
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                return resolution
+        except Exception:
+            pass
+        return None
+
+    with ThreadPoolExecutor() as executor:
+        results = executor.map(check_quality, RESOLUTIONS)
+
+    valid_resolutions = [res for res in results if res]
 
     if not valid_resolutions:
         return None
@@ -1808,12 +1812,14 @@ def vod_recover(streamer_name, video_id, timestamp, tracker_url=None):
         if vod_age > 60:
             print("Video is older than 60 days. Chances of recovery are very slim.")
         vod_url = None
+
         if timestamp:
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             vod_url = loop.run_until_complete(get_vod_urls(streamer_name, video_id, timestamp))
             loop.close()
+            vod_url = return_supported_qualities(vod_url)
 
         if vod_url is None:
             alternate_websites = generate_website_links(streamer_name, video_id, tracker_url)
@@ -1846,7 +1852,8 @@ def vod_recover(streamer_name, video_id, timestamp, tracker_url=None):
                     if vod_url:
                         return vod_url
                 else:
-                    print("Found same timestamp, skipping...")
+                    if parsed_timestamp is not None:
+                        print("Found same timestamp, skipping...")
 
             if not any(all_timestamps):
                 print("\033[91m \n✖ Unable to get the stream start datetime!\033[0m")
@@ -1968,17 +1975,32 @@ def clip_recover(streamer, video_id, duration):
     full_url_list = get_all_clip_urls(get_clip_format(video_id, calculate_max_clip_offset(duration)), clip_format)
 
     request_session = requests.Session()
-    rs = [grequests.head(u, session=request_session) for u in full_url_list]
+    max_retries = 3
 
-    for response in grequests.imap(rs, size=100):
-        iteration_counter += 1
-        print(f"\rSearching for clips... {iteration_counter} of {len(full_url_list)}", end=" ", flush=True)
-        if response.status_code == 200:
-            valid_counter += 1
-            valid_url_list.append(response.url)
-            print(f"- {valid_counter} Clip(s) Found", end=" ")
-        else:
-            print(f"- {valid_counter} Clip(s) Found", end=" ")
+    def check_url(url):
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = request_session.head(url, timeout=10)
+                return url, response.status_code
+            except Exception:
+                if attempt < max_retries:
+                    time.sleep(0.5)
+                else:
+                    return url, None
+
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        future_to_url = {executor.submit(check_url, url): url for url in full_url_list}
+        for future in as_completed(future_to_url):
+            iteration_counter += 1
+            url, status = future.result()
+            print(f"\rSearching for clips... {iteration_counter} of {len(full_url_list)}", end=" ", flush=True)
+            if status == 200:
+                valid_counter += 1
+                valid_url_list.append(url)
+                print(f"- {valid_counter} Clip(s) Found", end=" ")
+            else:
+                print(f"- {valid_counter} Clip(s) Found", end=" ")
+
     print()
 
     if valid_url_list:
@@ -2074,27 +2096,60 @@ def merge_csv_files(csv_filename, directory_path):
 
 
 def random_clip_recovery(video_id, hours, minutes):
-    counter = 0
-    display_limit = 5
+    max_retries = 3
+    display_count = 3
+
     clip_format = print_clip_format_menu().split(" ")
-    full_url_list = get_all_clip_urls(get_clip_format(video_id, calculate_max_clip_offset(calculate_broadcast_duration_in_minutes(hours, minutes))), clip_format)
+    duration = calculate_broadcast_duration_in_minutes(hours, minutes)
+    full_url_list = get_all_clip_urls(get_clip_format(video_id, calculate_max_clip_offset(duration)), clip_format)
     random.shuffle(full_url_list)
 
     request_session = requests.Session()
+
+    def check_url(url):
+        for _ in range(max_retries):
+            try:
+                response = request_session.head(url, timeout=10)
+                if response.status_code == 200:
+                    return url
+            except Exception:
+                time.sleep(0.5)
+        return None
+
     print("Searching...")
-    rs = (grequests.head(url, session=request_session) for url in full_url_list)
-    responses = grequests.imap(rs, size=100)
-    for response in responses:
-        if counter < display_limit:
-            if response.status_code == 200:
-                counter += 1
-                print(response.url)
-            if counter == display_limit:
-                user_option = input("Do you want to search more URLs (Y/N): ")
-                if user_option.upper() == "Y":
-                    display_limit += 3
-        else:
-            break
+
+    counter = 0
+    should_continue = True
+    url_iter = iter(full_url_list)
+
+    with ThreadPoolExecutor() as executor:
+        while should_continue:
+            batch_futures = []
+            try:
+                for _ in range(display_count * 2):
+                    url = next(url_iter)
+                    batch_futures.append(executor.submit(check_url, url))
+            except StopIteration:
+                pass 
+
+            if not batch_futures:
+                break 
+
+            for future in as_completed(batch_futures):
+                result = future.result()
+                if result:
+                    print(result)
+                    counter += 1
+
+                    if counter % display_count == 0:
+                        user_input = input("\nDo you want to search more URLs (Y/N): ").strip().upper()
+                        if user_input != "Y":                            
+                            should_continue = False
+                            break
+
+            if counter == 0 and not should_continue:
+                print("No valid clips found.")
+                break
 
 
 async def validate_clip(session, url, streamer_name, video_id):
@@ -2212,20 +2267,22 @@ def download_clips(directory, streamer_name, video_id):
         print("File is empty!")
         return
     mp4_links = [link for link in file_contents if os.path.basename(link).endswith(".mp4")]
-    reqs = [grequests.get(link, stream=False) for link in mp4_links]
-
-    print("\nDownloading clips...")
-    for response in grequests.imap(reqs, size=15):
-        if response.status_code == 200:
-            offset = extract_offset(response.url)
-            file_name = f"{streamer_name.title()}_{video_id}_{offset}{get_default_video_format()}"
-            try:
-                with open(os.path.join(download_directory, file_name), "wb") as x:
-                    x.write(response.content)
-            except ValueError:
-                print(f"Failed to download... {response.url}")
-        else:
-            print(f"Failed to download.... {response.url}")
+    for link in mp4_links:
+        try:
+            response = requests.get(link, stream=False, timeout=30)
+            if response.status_code == 200:
+                offset = extract_offset(response.url)
+                file_name = f"{streamer_name.title()}_{video_id}_{offset}{get_default_video_format()}"
+                try:
+                    with open(os.path.join(download_directory, file_name), "wb") as x:
+                        x.write(response.content)
+                except ValueError:
+                    print(f"Failed to download... {response.url}")
+            else:
+                print(f"Failed to download.... {response.url}")
+        except Exception:
+            print(f"Failed to download.... {link}")
+            continue
 
     print(f"\n\033[92m\u2713 Clips downloaded to {download_directory}\033[0m")
 
@@ -2947,7 +3004,7 @@ def twitch_recover(link=None):
         format_datetime = None
 
     m3u8_url = return_supported_qualities(url)
-    print(f"\n\033[92m\u2713 Found URL: {m3u8_url}\033[0m")
+    print(f"\n\033[92m\u2713 Found URL: {m3u8_url}\n\033[0m")
 
     m3u8_source = process_m3u8_configuration(m3u8_url, skip_check=True)
     return handle_download_menu(m3u8_source, title=title, stream_datetime=format_datetime)
