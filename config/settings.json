@@ -3,7 +3,7 @@
     "CHECK_SEGMENTS": false,
     "AUTO_DOWNLOAD_CLIPS": false,
     "REMOVE_LOG_FILE": true,
-    "ALWAYS_BEST_QUALITY": true,
+    "ALWAYS_BEST_QUALITY": false,
     "USE_PROGRESS_BAR": true,
     "DEFAULT_DIRECTORY": "~/Downloads/",
     "DEFAULT_VIDEO_FORMAT": ".mp4",
