@@ -28,7 +28,7 @@ import logging
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.3.15"
+CURRENT_VERSION = "1.3.16"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -113,7 +113,7 @@ def print_main_menu():
         "2) Clip Recovery",
         f"3) Download VOD ({default_video_format.lstrip('.')})",
         "4) Search Recent Streams",
-        "5) Unmute & Check M3U8 Availability",
+        "5) Extra M3U8 Options",
         "6) Options",
         "7) Exit",
     ]
@@ -260,6 +260,7 @@ def print_handle_m3u8_availability_menu():
     handle_m3u8_availability_options = [
         "1) Check if M3U8 file has muted segments",
         "2) Unmute & Remove invalid segments",
+        "3) Write M3U8 to file",
         "3) Return",
     ]
     while True:
@@ -1218,9 +1219,19 @@ async def fetch_status(session, url, retries=3, timeout=30):
         try:
             async with session.get(url, timeout=timeout) as response:
                 if response.status == 200:
-                    data = await response.text()
-                    if data and "#EXTM3U" in data:
+                    # For m3u8 files, check for the header
+                    if url.endswith('.m3u8'):
+                        data = await response.text()
+                        if data and "#EXTM3U" in data:
+                            return url
+                    # For TS files, just check status code
+                    elif url.endswith('.ts'):
                         return url
+                    # For other files, at least check if there's content
+                    else:
+                        data = await response.read()
+                        if data:
+                            return url
                 return None
                 
         except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError) as e:
@@ -1752,14 +1763,17 @@ async def validate_playlist_segments(segments):
     valid_segments = []
     all_segments = [url.strip() for url in segments]
     available_segment_count = 0
-    batch_size = 100
+    
+    batch_size = 200
     
     connector = aiohttp.TCPConnector(
-        limit=100,
+        limit=150,
         force_close=True,
-        enable_cleanup_closed=True
+        enable_cleanup_closed=True,
+        ssl=False
     )
-    timeout = aiohttp.ClientTimeout(total=30, connect=10)
+    
+    timeout = aiohttp.ClientTimeout(total=20, connect=5)
     
     try:
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -1768,7 +1782,7 @@ async def validate_playlist_segments(segments):
                 tasks = []
                 
                 for url in batch:
-                    task = asyncio.create_task(fetch_status(session, url))
+                    task = asyncio.create_task(fetch_status(session, url, retries=1, timeout=15))
                     tasks.append(task)
                 
                 try:
@@ -3163,7 +3177,11 @@ def run_vod_recover():
             elif mode == 2:
                 url = print_get_m3u8_link_menu()
                 mark_invalid_segments_in_playlist(url)
-
+            elif mode == 3:
+                url = print_get_m3u8_link_menu()
+                unmute_vod(url)
+                print(f"File saved to {get_default_directory()}")
+                input("\nPress Enter to continue...")
             elif menu == 3:
                 continue
         elif menu == 6:
