@@ -24,11 +24,12 @@ import ffmpeg_downloader as ffdl
 from tqdm import tqdm
 from ffmpeg_progress_yield import FfmpegProgress
 import logging
+import importlib.metadata
 
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 logging.getLogger('aiohttp').setLevel(logging.CRITICAL)
 
-CURRENT_VERSION = "1.3.16"
+CURRENT_VERSION = "1.3.17"
 SUPPORTED_FORMATS = [".mp4", ".mkv", ".mov", ".avi", ".ts"]
 RESOLUTIONS = ["chunked", "1440p60", "1440p30", "1080p60", "1080p30", "720p60", "720p30", "480p60", "480p30", "360p60", "360p30", "160p60", "160p30"]
 
@@ -525,7 +526,7 @@ def get_latest_streams_from_twitchtracker():
                     
                     m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
                     if m3u8_source:
-                        handle_download_menu(m3u8_source)
+                        handle_download_menu(m3u8_source, title=title, stream_datetime=timestamp)
                     else:
                         print(f"\n✖  Could not recover VOD {video_id}!")
                 except ValueError:
@@ -544,7 +545,7 @@ def get_latest_streams_from_twitchtracker():
                 m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
                 if m3u8_source:
                     print(f"\nRecovering VOD {video_id}...")
-                    handle_vod_url_normal(m3u8_source)
+                    handle_vod_url_normal(m3u8_source, title=title, stream_date=timestamp)
                 else:
                     print(f"\n✖  Could not recover VOD {video_id}!")
             break
@@ -1375,8 +1376,32 @@ def parse_website_duration(duration_string):
     return calculate_broadcast_duration_in_minutes(time_units["h"], time_units["m"])
 
 
+def check_seleniumbase_version():
+    try:
+        requirements_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib", "requirements.txt")
+        required_version = None
+
+        with open(requirements_path, "r", encoding="utf-8") as req_file:
+            for line in req_file:
+                match = re.match(r"seleniumbase==([\d.]+)", line.strip())
+                if match:
+                    required_version = match.group(1)
+                    break
+        installed_version = importlib.metadata.version("seleniumbase")
+        if required_version and version.parse(installed_version) < version.parse(required_version):
+            print(f"Upgrading seleniumbase from {installed_version} to {required_version}...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", f"seleniumbase=={required_version}"])
+                print(f"seleniumbase upgraded to {required_version}")
+            except Exception as pip_e:
+                print(f"\033[91m[ERROR]\033[0m Could not upgrade seleniumbase: {pip_e}")
+    except Exception as e:
+        pass
+
+
 def handle_selenium(url):
     try:
+        check_seleniumbase_version()
         with SB(uc=True) as sb:
             try:
                 sb.activate_cdp_mode(url)
