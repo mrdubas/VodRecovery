@@ -373,65 +373,25 @@ def get_latest_streams_from_twitchtracker():
     for attempt in range(max_retries):
         try:
             print("\nOpening TwitchTracker with browser...")
-            source = handle_selenium(url)
-            if not source:
-                if attempt < max_retries - 1:
-                    print("Retrying...")
-                    continue
-                else:
-                    print("\n✖  Unable to open TwitchTracker!")
-                    return
-                
-            bs = BeautifulSoup(source, "html.parser")
-                
-            streams_table = bs.find("table", {"id": "streams"})
-            if not streams_table:
-                if attempt < max_retries - 1:
-                    print("Retrying...")
-                    continue
-                else:
-                    print("Unable to get streams from TwitchTracker!")
-                    return
-                    
-            all_rows = streams_table.find("tbody").find_all("tr")
-            if not all_rows:
-                if attempt < max_retries - 1:
-                    print("Retrying...")
-                    continue
-                else:
-                    print("Unable to get streams from TwitchTracker!")
-                    return
-            
-            total_rows = all_rows
-            total_pages = (len(total_rows) + 10 - 1)
-            
-            # Check first row's date format
-            first_row = all_rows[0]
-            first_date = first_row.find_all("td")[0].find("span").text
+            streams = selenium_get_latest_streams_from_twitchtracker(url)
 
-            if re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$', first_date.strip()):
-                print("\nInvalid date format detected, refreshing page...")
+            if not streams:
                 if attempt < max_retries - 1:
                     print("Retrying...")
                     continue
                 else:
-                    print("\n✖  Could not load correct date format after multiple attempts!")
+                    print("Unable to get streams from TwitchTracker!")
                     return
-                
-            try:
-                timezone_element = bs.find("div", {"class": "navbar-static", "id": "timezone-switch"}).find("span")
-                timezone_text = timezone_element.text if timezone_element else "UTC"
-                # Extract timezone offset from text like "UTC+2" or "UTC-5"
-                timezone_match = re.match(r'UTC([+-]\d+)', timezone_text)
-                timezone_offset = int(timezone_match.group(1)) if timezone_match else 0
-            except Exception as e:
-                print(f"\nWarning: Could not determine timezone, defaulting to UTC: {str(e)}")
-                timezone_offset = 0
+
+            # Show 10 vods per page
+            rows_per_page = 10
+            total_rows = len(streams)
+            total_pages = (total_rows + rows_per_page - 1) // rows_per_page
             
-            def display_streams(page_num, timezone_offset):
+            def display_streams(page_num):
                 start_idx = (page_num - 1) * 10
-                end_idx = min(start_idx + 10, len(total_rows))
-                rows_to_display = total_rows[start_idx:end_idx]
+                end_idx = min(start_idx + 10, total_rows)
+                rows_to_display = streams[start_idx:end_idx]
                 
                 print(f"\nLatest streams for {streamer_name}:")
                 print("\n#   Date                Duration    Title")
@@ -442,39 +402,20 @@ def get_latest_streams_from_twitchtracker():
                 
                 for idx, row in enumerate(rows_to_display, start_idx + 1):
                     try:
-                        cells = row.find_all("td")
-                            
-                        date = cells[0].find("span").text.strip()
-                        duration = cells[1].find("span").text.strip().ljust(10)
-                        
-                        title = cells[6].text.strip()
-                        
-                        # Get video ID from the link
-                        link = cells[0].find("a")
-                        if not link or not link.has_attr("href"):
-                            print(f"\n✖  Could not find video ID for stream {idx}")
-                            continue
-                        video_id = link["href"].split("/")[-1]
-                        
-                        # Convert to UTC for recovery process but keep local for display
-                        try:
-                            local_dt = datetime.strptime(date, "%d/%b/%Y %H:%M")
-                            utc_dt = local_dt - timedelta(hours=timezone_offset)
-                            date_utc = utc_dt.strftime("%d/%b/%Y %H:%M")
-                        except Exception:
-                            date_utc = date
-                        
-                        stream_info.append((video_id, date, date_utc, title)) 
-                        valid_streams.append(idx)
-                        
+                        date_utc = row['dt_utc']
                         idx_str = str(idx).ljust(3)
-                        date_str = date.ljust(20)
-                        duration_str = duration.ljust(10)
-                        
+                        date_str = row['dt_local'].ljust(20)
+                        duration_str = (str(round(row['duration'], 1)) + " hrs").ljust(10)
+
                         # Trim title if too long and add ellipsis
+                        title = row['title']
                         if len(title) > 75:
                             title = title[:72] + "..."
-                        
+
+                        video_id = row['stream_id']
+                        stream_info.append((video_id, date_str, date_utc, title))
+                        valid_streams.append(idx)
+
                         print(f"{idx_str} {date_str} {duration_str} {title}")
                     except Exception as e:
                         print(f"\n✖  Error processing stream {idx}: {str(e)}")
@@ -482,7 +423,7 @@ def get_latest_streams_from_twitchtracker():
                 
                 return stream_info, valid_streams
             
-            stream_info, valid_streams = display_streams(current_page, timezone_offset)
+            stream_info, valid_streams = display_streams(current_page)
                     
             if not stream_info:
                 print("\n✖  No valid streams found!")
@@ -508,7 +449,7 @@ def get_latest_streams_from_twitchtracker():
         print("\nOptions:")
         print("1. Recover specific stream")
         print("2. Recover all streams")
-        if current_page == 1:
+        if current_page < total_pages:
             print("3. Show next 10 streams")
             print("4. Return")
         else:
@@ -522,7 +463,7 @@ def get_latest_streams_from_twitchtracker():
                     list_index = valid_streams.index(stream_num)
                     video_id, date_str, date_utc, title = stream_info[list_index]
                     print(f"\nRecovering VOD: {date_str} - {title}")  # Show local time
-                    timestamp = datetime.strptime(date_utc, "%d/%b/%Y %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
+                    timestamp = datetime.strptime(date_utc, "%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
                     
                     m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
                     if m3u8_source:
@@ -540,7 +481,7 @@ def get_latest_streams_from_twitchtracker():
             print("\nRecovering all streams...")
             for video_id, date_str, date_utc, title in stream_info:
                 print(f"\nRecovering Video: {date_str} - {title}")  # Show local time
-                timestamp = datetime.strptime(date_utc, "%d/%b/%Y %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
+                timestamp = datetime.strptime(date_utc, "%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M:%S")  # Use UTC for recovery
                 
                 m3u8_source = vod_recover(streamer_name, video_id, timestamp, url)
                 if m3u8_source:
@@ -550,13 +491,10 @@ def get_latest_streams_from_twitchtracker():
                     print(f"\n✖  Could not recover VOD {video_id}!")
             break
         elif choice == "3":
-            if current_page == 1:
+            if current_page < total_pages:
                 # Show next 10 streams
-                if current_page < total_pages:
-                    current_page += 1
-                    stream_info, valid_streams = display_streams(current_page, timezone_offset)
-                else:
-                    print("\nYou've reached the last page of streams.")
+                current_page += 1
+                stream_info, valid_streams = display_streams(current_page)
             else:
                 # Return option
                 break
@@ -1424,13 +1362,104 @@ def handle_selenium(url):
                 except Exception as e:
                     print(e)
             finally:
-                try:
-                    if os.path.exists("downloaded_files"):
-                        rmtree("downloaded_files") # delete folder generated by selenium browser
-                except Exception:
-                    pass
+                selenium_cleanup()
     except Exception as e:
         print(e)
+
+
+def selenium_get_latest_streams_from_twitchtracker(url):
+    try:
+        check_seleniumbase_version()
+        with SB(uc=True) as sb:
+            try:
+                sb.activate_cdp_mode(url)
+                sb.sleep(3)
+                sb.uc_gui_click_captcha()
+                sb.sleep(3)
+            except Exception as e:
+                print(e)
+            finally:
+                selenium_cleanup()
+
+            # Get timezone offset in hours and minutes
+            try:
+                timezone_text = sb.execute_script("document.querySelector('#timezone-switch > span')?.textContent || null")
+                # Extract timezone offset from text like "UTC+2", "UTC-5 or UTC+9:-30"
+                timezone_match = re.match(r'UTC([+-]\d+):?[+-]?(\d+)?', timezone_text)
+                timezone_offset_hours = int(timezone_match.group(1) if timezone_match else 0)
+                timezone_offset_mins = int(timezone_match.group(2) if timezone_match and timezone_match.group(2) else 0)
+            except Exception as e:
+                print(f"\nWarning: Could not determine timezone, defaulting to UTC: {str(e)}")
+                timezone_offset_hours = 0
+                timezone_offset_mins = 0
+
+            streams = []
+
+            try:
+                # Get all available stream info
+                data = sb.execute_script("$('#streams').DataTable().data()")
+                compl = sb.execute_script("Y.complicator")
+                if compl is None or data is None:
+                    raise Exception("Could not find stream data")
+
+                for key in data:
+                    # Ignore keys that aren't a part of the dataset (functions/prototypes/etc.)
+                    if not key.isdigit():
+                        continue
+
+                    row = data[key]
+                    dt_utc = row[0]['@data-order']
+                    dt = datetime.strptime(dt_utc, "%Y-%m-%d %H:%M")
+                    dt_local = datetime.strftime(dt + timedelta(hours=timezone_offset_hours, minutes=timezone_offset_mins), "%d/%b/%Y %H:%M")
+
+                    title = row[6]
+
+                    # Duration is in minutes - convert to hours.fraction eg. 1.5 hrs
+                    dur_raw = float(row[1]['@data-order'])
+                    duration = dur_raw // 60 + (dur_raw % 60 / 60)
+
+                    # Ignore streams that are older than the twitch vod retention time (60 days)
+                    local_date = datetime.strptime(dt_local, "%d/%b/%Y %H:%M")
+                    current_date = datetime.now()
+                    old_date = current_date - timedelta(days=60)
+                    if local_date < old_date:
+                        continue
+
+                    # Should not occur for streams that newer than about a year old
+                    if not dt_utc in compl:
+                        print(f"Error: date key {dt_utc} for stream {title} not found in complicators object")
+                        continue
+
+                    assist = compl[dt_utc]
+                    stream_id = assist['id']
+                    stream = {
+                        'dt_utc': dt_utc,
+                        'dt_local': dt_local,
+                        'title': title,
+                        'duration': duration,
+                        'stream_id': stream_id,
+                    }
+
+                    streams.append(stream)
+            except Exception as e:
+                print(e)
+                return None
+
+            # Data comes in as oldest first, order by newest instead
+            streams.reverse()
+            return streams
+
+    except Exception as e:
+        print(e)
+
+
+def selenium_cleanup():
+    try:
+        if os.path.exists("downloaded_files"):
+            # delete folder generated by selenium browser
+            rmtree("downloaded_files")
+    except Exception:
+        pass
 
 
 def parse_streamscharts_duration_data(bs):
