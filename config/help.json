@@ -4,7 +4,7 @@
     "2) Clip Recovery": "Recovers all clips from past broadcasts.",
     "3) Download Vod": "Downloads a Vod or Highlight from a M3U8 link or Twitch URL.",
     "4) Search Recent Streams": "Finds the 10 most recent streams from the specified streamer",
-    "5) Extras M3U8 Options": "Menu options for handling M3U8 files.",
+    "5) Unmute & Check M3U8 Availability": "Check and Removes Unavailable Segments in a M3U8 file.",
     "6) Options": "Menu options for the application.",
     "7) Exit": "Exits the application."
   },
@@ -37,10 +37,9 @@
     "3) Legacy Format ([VodID]-index-[interval])": "Uses a legacy naming format for clips. (May 28th, 2016 - August 2016)",
     "4) Return": "Returns to main menu."
   },
-  "EXTRA_M3U8_OPTIONS_MENU": {
+  "UNMUTE_AND_CHECK_M3U8_MENU": {
     "1) Check if M3U8 file has muted segments": "Checks if the M3U8 file has muted segments.",
     "2) Unmute & Remove invalid segments": "Unmutes the M3U8 file and removes any invalid segments.",
-    "3) Write M3U8 to file": "Writes the M3U8 file to the default directory.",
     "3) Return": "Returns to main menu."
   },
   "DOWNLOAD_TYPE_MENU": {

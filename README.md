@@ -35,7 +35,7 @@ This is the interactive menu:
 2) Clip Recovery
 3) Download VOD (default mp4)
 4) Search Recent Streams
-5) Extra M3U8 Options
+5) Unmute & Check M3U8 Availability
 6) Options
 7) Exit
 ```
