@@ -1242,7 +1242,7 @@ async def get_vod_urls(streamer_name, video_id, start_timestamp):
 
     m3u8_link_list = [
         f"{domain.strip()}{str(hashlib.sha1(f'{streamer_name}_{video_id}_{int(calculate_epoch_timestamp(start_timestamp, seconds))}'.encode('utf-8')).hexdigest())[:20]}_{streamer_name}_{video_id}_{int(calculate_epoch_timestamp(start_timestamp, seconds))}/chunked/index-dvr.m3u8"
-        for seconds in range(60)
+        for seconds in range(240)
         for domain in domains if domain.strip()
     ]
 
